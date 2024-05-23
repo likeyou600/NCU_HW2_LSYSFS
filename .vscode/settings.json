@@ -1,0 +1,11 @@
+{
+    "files.associations": {
+        "rsa.h": "c",
+        "err.h": "c",
+        "errno.h": "c",
+        "aes.h": "c",
+        "*.inc": "c",
+        "vector": "c",
+        "rand.h": "c"
+    }
+}

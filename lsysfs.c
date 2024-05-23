@@ -19,7 +19,13 @@
 #include <stdlib.h>
 #include <errno.h>
 
+ //openssl
+#include <openssl/aes.h>
+#include <openssl/rand.h>
+
+
  // ... //
+char key[256][256];
 
 char dir_list[256][256];
 int curr_dir_idx = -1;
@@ -81,13 +87,65 @@ int get_file_index(const char* path)
 void write_to_file(const char* path, const char* new_content)
 {
 	int file_idx = get_file_index(path);
+	printf("file_idx : %d\n", file_idx);
 
 	if (file_idx == -1) // No such file
 		return;
 
-	strcpy(files_content[file_idx], new_content);
+	//gen key
+	unsigned char aes_key[32];
+
+	// 256bits 32byte
+	RAND_bytes(aes_key, 32);
+	printf("generated AES-256 key：\n");
+	for (int i = 0; i < 32; ++i) {
+		printf("%02X", aes_key[i]);
+	}
+	printf("\n");
+	memcpy(key[file_idx], aes_key, 32);
+
+	printf("encrypting...\n");
+	printf("\n");
+
+	unsigned char ciphertext[256];
+	int outlen, tmplen;
+	EVP_CIPHER_CTX* ctx;
+
+	ctx = EVP_CIPHER_CTX_new();
+	EVP_EncryptInit_ex(ctx, EVP_aes_256_ecb(), NULL, aes_key, NULL);
+	EVP_EncryptUpdate(ctx, ciphertext, &outlen, (const unsigned char*)new_content, strlen(new_content));
+	EVP_EncryptFinal_ex(ctx, ciphertext + outlen, &tmplen);
+	outlen += tmplen;
+	EVP_CIPHER_CTX_free(ctx);
+
+	// strcpy(files_content[file_idx], new_content);
+	strcpy(files_content[file_idx], ciphertext);
+	printf("\n");
+
 }
 
+void remove_file(const char* path)
+{
+	int file_idx = get_file_index(path);
+	printf("delete_file_idx : %d \n", file_idx);
+
+	if (file_idx == -1) // No such file
+		return;
+
+	// Shift all files down by one
+	for (int i = file_idx; i < curr_file_idx; i++) {
+		strcpy(files_list[i], files_list[i + 1]);
+		strcpy(files_content[i], files_content[i + 1]);
+	}
+
+	// Clear the last entry
+	files_list[curr_file_idx][0] = '\0';
+	files_content[curr_file_idx][0] = '\0';
+
+	curr_file_idx--;
+	curr_file_content_idx--;
+	printf("\n");
+}
 // ... //
 
 static int do_getattr(const char* path, struct stat* st)
@@ -135,20 +193,55 @@ static int do_readdir(const char* path, void* buffer, fuse_fill_dir_t filler, of
 
 static int do_read(const char* path, char* buffer, size_t size, off_t offset, struct fuse_file_info* fi)
 {
+	printf("do_read\n");
+
 	int file_idx = get_file_index(path);
+	printf("file_idx : %d\n", file_idx);
 
 	if (file_idx == -1)
 		return -1;
 
 	char* content = files_content[file_idx];
 
-	memcpy(buffer, content + offset, size);
+	// Perform decryption
+	unsigned char decrypted_text[256];
+	int outlen, tmplen;
+	EVP_CIPHER_CTX* ctx;
 
-	return strlen(content) - offset;
+	// Use the same key as used for encryption
+	unsigned char aes_key[32];
+	memcpy(aes_key, key[file_idx], 32);
+
+	printf("stored AES-256 key：\n");
+	for (int i = 0; i < 32; ++i) {
+		printf("%02X", aes_key[i]);
+	}
+	printf("\n");
+
+
+
+	ctx = EVP_CIPHER_CTX_new();
+	EVP_DecryptInit_ex(ctx, EVP_aes_256_ecb(), NULL, aes_key, NULL);
+	EVP_DecryptUpdate(ctx, decrypted_text, &outlen, (const unsigned char*)content + offset, strlen((char*)content));
+	EVP_DecryptFinal_ex(ctx, decrypted_text + outlen, &tmplen);
+	outlen += tmplen;
+	EVP_CIPHER_CTX_free(ctx);
+	printf("decrypting...\n");
+
+	decrypted_text[outlen + tmplen] = '0';
+	// Copy decrypted text to buffer
+	memcpy(buffer, decrypted_text, outlen);
+
+	return outlen;
+
+	// memcpy(buffer, content + offset, size);
+
+	// return strlen(content) - offset;
 }
 
 static int do_mkdir(const char* path, mode_t mode)
 {
+	printf("do_mkdir\n");
 	path++;
 	add_dir(path);
 
@@ -157,6 +250,7 @@ static int do_mkdir(const char* path, mode_t mode)
 
 static int do_mknod(const char* path, mode_t mode, dev_t rdev)
 {
+	printf("do_mknod\n");
 	path++;
 	add_file(path);
 
@@ -165,11 +259,19 @@ static int do_mknod(const char* path, mode_t mode, dev_t rdev)
 
 static int do_write(const char* path, const char* buffer, size_t size, off_t offset, struct fuse_file_info* info)
 {
+	printf("do_write\n");
 	write_to_file(path, buffer);
 
 	return size;
 }
+static int do_rm(const char* path)
+{
+	printf("do_rm\n");
 
+	remove_file(path);
+
+	return 0;
+}
 static struct fuse_operations operations = {
 	.getattr = do_getattr,
 	.readdir = do_readdir,
@@ -177,9 +279,13 @@ static struct fuse_operations operations = {
 	.mkdir = do_mkdir,
 	.mknod = do_mknod,
 	.write = do_write,
+	.unlink = do_rm,
+
 };
 
 int main(int argc, char* argv[])
 {
+	printf("\n");
+	printf("\n");
 	return fuse_main(argc, argv, &operations, NULL);
 }
